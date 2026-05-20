@@ -246,106 +246,114 @@ async function runScraper(state: string, city: string, maxPages = 1) {
   await crawler.run([{ url: `${baseUrl}?pagina=1`, userData: { page: 1 } }]);
 }
 
-async function startServer() {
-  const app = express();
-  app.use(express.json());
+const app = express();
+app.use(express.json());
 
-  // API Routes
-  app.post("/api/scrape", async (req, res) => {
-    console.log("POST /api/scrape received");
-    const { state, city } = req.body;
-    if (!state || !city) return res.status(400).json({ error: "Estado e Cidade são obrigatórios." });
+// API Routes
+app.post("/api/scrape", async (req, res) => {
+  console.log("POST /api/scrape received");
+  const { state, city } = req.body;
+  if (!state || !city) return res.status(400).json({ error: "Estado e Cidade são obrigatórios." });
 
-    // 1. Generate local simulated / high-fidelity seed results instantly so the user gets instant visual feedback!
-    const simulated = generateSimulatedCorretores(state, city, 8);
-    for (const s of simulated) {
-      const idx = localCorretores.findIndex(r => r.anunciante_id === s.anunciante_id);
-      if (idx === -1) {
-        localCorretores.unshift(s);
-      }
+  // 1. Generate local simulated / high-fidelity seed results instantly so the user gets instant visual feedback!
+  const simulated = generateSimulatedCorretores(state, city, 8);
+  for (const s of simulated) {
+    const idx = localCorretores.findIndex(r => r.anunciante_id === s.anunciante_id);
+    if (idx === -1) {
+      localCorretores.unshift(s);
     }
-
-    // 2. Also try to upsert them into Supabase if configured
-    const supabase = getSupabase();
-    if (supabase) {
-      try {
-        const contactsToInsert = simulated.map(({ id, ...c }) => c); // remove id field for Supabase mapping
-        await supabase.from("corretores").upsert(contactsToInsert, { onConflict: "anunciante_id" });
-      } catch (err: any) {
-        console.error("Failed to upsert simulated items to Supabase:", err.message);
-      }
-    }
-
-    // 3. Fire up the background crawler to attempt real web scraping too
-    runScraper(state, city, 2).catch(console.error);
-
-    res.json({ message: "Motor de busca de corretores iniciado. Capturando registros..." });
-  });
-
-  app.get("/api/corretores", async (req, res) => {
-    console.log("GET /api/corretores received");
-    const supabase = getSupabase();
-    if (!supabase) {
-      console.log("No Supabase available, returning local database.");
-      // Sort localCorretores by criado_em descending
-      localCorretores.sort((a, b) => new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime());
-      return res.json(localCorretores);
-    }
-
-    try {
-      const { data, error } = await supabase
-        .from("corretores")
-        .select("*")
-        .order("criado_em", { ascending: false });
-
-      if (error) {
-        console.error("Supabase query error:", error.message);
-        // Fallback to local
-        localCorretores.sort((a, b) => new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime());
-        return res.json(localCorretores);
-      }
-
-      // Merge remote real data and local data (eliminate duplicates)
-      const combined = [...(data || [])];
-      for (const local of localCorretores) {
-        const exists = combined.some(r => r.anunciante_id === local.anunciante_id);
-        if (!exists) {
-          combined.push(local);
-        }
-      }
-
-      // Sort by criado_em descending
-      combined.sort((a, b) => new Date(b.criado_em || 0).getTime() - new Date(a.criado_em || 0).getTime());
-
-      return res.json(combined);
-    } catch (err: any) {
-      console.error("Failed to fetch from remote Supabase:", err.message);
-      localCorretores.sort((a, b) => new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime());
-      return res.json(localCorretores);
-    }
-  });
-
-  if (process.env.NODE_ENV !== "production") {
-    console.log("Starting server in DEVELOPMENT mode with Vite middleware");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    console.log("Starting server in PRODUCTION mode");
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server listening on port ${PORT}`);
+  // 2. Also try to upsert them into Supabase if configured
+  const supabase = getSupabase();
+  if (supabase) {
+    try {
+      const contactsToInsert = simulated.map(({ id, ...c }) => c); // remove id field for Supabase mapping
+      await supabase.from("corretores").upsert(contactsToInsert, { onConflict: "anunciante_id" });
+    } catch (err: any) {
+      console.error("Failed to upsert simulated items to Supabase:", err.message);
+    }
+  }
+
+  // 3. Fire up the background crawler to attempt real web scraping too
+  if (!process.env.VERCEL) {
+    runScraper(state, city, 2).catch(console.error);
+  } else {
+    console.log("Running on Vercel Serverless: skipping background scraping.");
+  }
+
+  res.json({ message: "Motor de busca de corretores iniciado. Capturando registros..." });
+});
+
+app.get("/api/corretores", async (req, res) => {
+  console.log("GET /api/corretores received");
+  const supabase = getSupabase();
+  if (!supabase) {
+    console.log("No Supabase available, returning local database.");
+    // Sort localCorretores by criado_em descending
+    localCorretores.sort((a, b) => new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime());
+    return res.json(localCorretores);
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("corretores")
+      .select("*")
+      .order("criado_em", { ascending: false });
+
+    if (error) {
+      console.error("Supabase query error:", error.message);
+      // Fallback to local
+      localCorretores.sort((a, b) => new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime());
+      return res.json(localCorretores);
+    }
+
+    // Merge remote real data and local data (eliminate duplicates)
+    const combined = [...(data || [])];
+    for (const local of localCorretores) {
+      const exists = combined.some(r => r.anunciante_id === local.anunciante_id);
+      if (!exists) {
+        combined.push(local);
+      }
+    }
+
+    // Sort by criado_em descending
+    combined.sort((a, b) => new Date(b.criado_em || 0).getTime() - new Date(a.criado_em || 0).getTime());
+
+    return res.json(combined);
+  } catch (err: any) {
+    console.error("Failed to fetch from remote Supabase:", err.message);
+    localCorretores.sort((a, b) => new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime());
+    return res.json(localCorretores);
+  }
+});
+
+if (!process.env.VERCEL) {
+  const startLocalServer = async () => {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("Starting server in DEVELOPMENT mode with Vite middleware");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      console.log("Starting server in PRODUCTION mode");
+      const distPath = path.join(process.cwd(), "dist");
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server listening on port ${PORT}`);
+    });
+  };
+
+  startLocalServer().catch(err => {
+    console.error("Failed to start local server:", err);
   });
 }
 
-startServer().catch(err => {
-  console.error("Failed to start server:", err);
-});
+export default app;
