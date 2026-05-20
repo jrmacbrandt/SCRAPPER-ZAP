@@ -1,5 +1,9 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
+import type { IncomingMessage, ServerResponse } from "http";
+
+// Vercel serverless handler types (compatible with @vercel/node runtime)
+type VercelRequest = IncomingMessage & { body?: any; query?: Record<string, string | string[]>; url?: string; method?: string };
+type VercelResponse = ServerResponse & { status: (code: number) => VercelResponse; json: (body: any) => void; end: () => void; setHeader: (name: string, value: string) => VercelResponse };
 
 // ── Local Memory Database (Serverless-safe) ─────────────────────────────────
 
